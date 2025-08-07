@@ -1,22 +1,22 @@
-// WhatsApp Auto-Responder Prototype
-// Based on whatsapp-web.js library (uses WhatsApp Web protocol)
-
+// WhatsApp Auto-Responder with Web QR Code Display
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode'); // For web QR generation
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const path = require('path');
 
 class WhatsAppAutoResponder {
     constructor() {
         this.client = null;
         this.isAwayMode = false;
         this.awayMessage = "I'm away from my smartphone. If urgent, call me on +33 XX XX XX XX";
-        this.vipContacts = new Set(); // VIP contacts who don't get auto-replies
-        this.lastReplies = new Map(); // Track last reply time to avoid spam
-        this.replyDelay = 30000; // 30 seconds minimum between replies to same contact
-        this.io = null; // Socket.io instance for real-time updates
+        this.vipContacts = new Set();
+        this.lastReplies = new Map();
+        this.replyDelay = 30000;
+        this.io = null;
+        this.qrString = null; // Store QR code for web display
+        this.isConnected = false;
         
         this.initializeWebServer();
         this.initializeWhatsApp();
@@ -25,7 +25,6 @@ class WhatsAppAutoResponder {
     initializeWhatsApp() {
         console.log('🔧 Initializing WhatsApp client...');
         
-        // Initialize WhatsApp client with local authentication
         this.client = new Client({
             authStrategy: new LocalAuth({
                 name: 'auto-responder'
@@ -46,26 +45,51 @@ class WhatsAppAutoResponder {
         });
 
         // Event: QR Code received
-        this.client.on('qr', (qr) => {
-            console.log('📱 Scan this QR code with your WhatsApp:');
+        this.client.on('qr', async (qr) => {
+            console.log('📱 QR Code received');
+            
+            // Show QR in terminal (existing functionality)
             qrcode.generate(qr, { small: true });
             console.log('👆 Or go to http://localhost:3000 to see QR code in browser');
+            
+            // Generate QR code data URL for web dashboard
+            try {
+                this.qrString = await QRCode.toDataURL(qr);
+                console.log('✅ QR Code generated for web dashboard');
+                
+                // Send QR code to all connected web clients
+                this.broadcastQRCode(this.qrString);
+                this.broadcastLog('📱 Scan the QR code above with your WhatsApp');
+            } catch (error) {
+                console.error('❌ Error generating QR code for web:', error);
+            }
         });
 
         // Event: Client ready
         this.client.on('ready', () => {
             console.log('✅ WhatsApp Auto-Responder is ready!');
             console.log('🌐 Dashboard available at: http://localhost:3000');
+            this.isConnected = true;
+            this.qrString = null; // Clear QR code when connected
+            this.broadcastConnectionStatus(true);
+            this.broadcastLog('✅ WhatsApp connected successfully!');
         });
 
         // Event: Authentication failure
         this.client.on('auth_failure', (msg) => {
             console.error('❌ Authentication failed:', msg);
+            this.isConnected = false;
+            this.broadcastConnectionStatus(false);
+            this.broadcastLog('❌ Authentication failed - refresh page to get new QR code');
         });
 
         // Event: Disconnected
         this.client.on('disconnected', (reason) => {
             console.log('📵 WhatsApp disconnected:', reason);
+            this.isConnected = false;
+            this.qrString = null;
+            this.broadcastConnectionStatus(false);
+            this.broadcastLog('📵 WhatsApp disconnected - refresh page to reconnect');
         });
 
         // Event: New message received
@@ -73,33 +97,41 @@ class WhatsAppAutoResponder {
             await this.handleIncomingMessage(message);
         });
 
-        // Initialize WhatsApp client
         this.client.initialize();
+    }
+
+    // Broadcast QR code to web clients
+    broadcastQRCode(qrDataURL) {
+        if (this.io) {
+            this.io.emit('qr-code', qrDataURL);
+        }
+    }
+
+    // Broadcast connection status
+    broadcastConnectionStatus(connected) {
+        if (this.io) {
+            this.io.emit('connection-status', { 
+                connected, 
+                qrCode: connected ? null : this.qrString 
+            });
+        }
     }
 
     async handleIncomingMessage(message) {
         try {
-            // Skip if away mode is off
             if (!this.isAwayMode) return;
-
-            // Skip if message is from us
             if (message.fromMe) return;
-
-            // Skip if it's a group message (optional)
             if (message.from.includes('@g.us')) return;
 
-            // Get contact info
             const contact = await message.getContact();
             const contactId = contact.id.user;
             const contactName = contact.name || contact.pushname || contactId;
 
-            // Skip if contact is in VIP list
             if (this.vipContacts.has(contactId)) {
                 console.log(`🔕 Skipping VIP contact: ${contactName}`);
                 return;
             }
 
-            // Check if we recently replied to this contact
             const lastReplyTime = this.lastReplies.get(contactId);
             const now = Date.now();
             
@@ -108,10 +140,7 @@ class WhatsAppAutoResponder {
                 return;
             }
 
-            // Send auto-reply
             await this.sendAutoReply(message, contactName);
-            
-            // Update last reply time
             this.lastReplies.set(contactId, now);
 
         } catch (error) {
@@ -122,15 +151,11 @@ class WhatsAppAutoResponder {
     async sendAutoReply(originalMessage, contactName) {
         try {
             console.log(`📤 Sending auto-reply to: ${contactName}`);
-            
-            // Send real-time update to web dashboard
             this.broadcastLog(`📤 Sending auto-reply to: ${contactName}`);
             
             await originalMessage.reply(this.awayMessage);
             
             console.log(`✅ Auto-reply sent to ${contactName}`);
-            
-            // Send success update to web dashboard
             this.broadcastLog(`✅ Auto-reply sent to ${contactName}`);
             
         } catch (error) {
@@ -144,13 +169,23 @@ class WhatsAppAutoResponder {
         const server = http.createServer(app);
         this.io = new Server(server);
         
-        // Middleware
         app.use(express.json());
         app.use(express.static('public'));
         
         // Socket.io connection handling
         this.io.on('connection', (socket) => {
             console.log('🌐 Dashboard connected');
+            
+            // Send current status to newly connected client
+            socket.emit('connection-status', { 
+                connected: this.isConnected, 
+                qrCode: this.isConnected ? null : this.qrString 
+            });
+            
+            if (this.qrString) {
+                socket.emit('qr-code', this.qrString);
+            }
+            
             socket.emit('log', '🌐 Dashboard connected');
         });
         
@@ -160,7 +195,7 @@ class WhatsAppAutoResponder {
             res.send(dashboardHTML);
         });
 
-        // API route: Toggle away mode
+        // API routes
         app.post('/api/toggle-away', (req, res) => {
             this.isAwayMode = !this.isAwayMode;
             console.log(`🔄 Away mode: ${this.isAwayMode ? 'ON' : 'OFF'}`);
@@ -168,7 +203,6 @@ class WhatsAppAutoResponder {
             res.json({ awayMode: this.isAwayMode });
         });
 
-        // API route: Update away message
         app.post('/api/update-message', (req, res) => {
             const { message } = req.body;
             if (message && message.trim()) {
@@ -181,7 +215,6 @@ class WhatsAppAutoResponder {
             }
         });
 
-        // API route: Add VIP contact
         app.post('/api/add-vip', (req, res) => {
             const { phoneNumber } = req.body;
             if (phoneNumber) {
@@ -194,24 +227,22 @@ class WhatsAppAutoResponder {
             }
         });
 
-        // API route: Get status
         app.get('/api/status', (req, res) => {
             res.json({
                 awayMode: this.isAwayMode,
                 message: this.awayMessage,
                 vipContacts: Array.from(this.vipContacts),
-                isConnected: this.client ? this.client.info !== null : false
+                isConnected: this.isConnected,
+                qrCode: this.isConnected ? null : this.qrString
             });
         });
 
-        // Start server
         const PORT = process.env.PORT || 3000;
         server.listen(PORT, () => {
             console.log(`🌐 Dashboard server running on http://localhost:${PORT}`);
         });
     }
 
-    // Method to broadcast log messages to all connected clients
     broadcastLog(message) {
         if (this.io) {
             this.io.emit('log', message);
@@ -232,6 +263,15 @@ class WhatsAppAutoResponder {
         .container { max-width: 800px; margin: 0 auto; }
         .card { background: white; border-radius: 8px; padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .header { text-align: center; color: #25d366; margin-bottom: 30px; }
+        
+        /* QR Code Section */
+        .qr-section { text-align: center; padding: 20px; background: #f8f9fa; border-radius: 8px; margin-bottom: 20px; }
+        .qr-code { max-width: 256px; margin: 0 auto; border: 2px solid #25d366; border-radius: 8px; }
+        .qr-status { font-size: 18px; margin-bottom: 16px; }
+        .qr-status.connected { color: #25d366; }
+        .qr-status.disconnected { color: #666; }
+        .qr-instructions { color: #666; margin-top: 12px; font-size: 14px; }
+        
         .status { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
         .status-indicator { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
         .status-indicator.on { background: #25d366; }
@@ -255,6 +295,25 @@ class WhatsAppAutoResponder {
         <div class="header">
             <h1>📱 WhatsApp Auto-Responder</h1>
             <p>Manage your away messages and digital boundaries</p>
+        </div>
+
+        <!-- QR Code Section -->
+        <div class="card">
+            <div class="qr-section">
+                <div class="qr-status" id="qrStatus">Connecting to WhatsApp...</div>
+                <div id="qrContainer" style="display: none;">
+                    <img id="qrCode" class="qr-code" alt="QR Code">
+                    <div class="qr-instructions">
+                        1. Open WhatsApp on your phone<br>
+                        2. Go to Settings → Linked Devices<br>
+                        3. Tap "Link a Device"<br>
+                        4. Scan this QR code
+                    </div>
+                </div>
+                <div id="connectedMessage" style="display: none; color: #25d366; font-size: 18px;">
+                    ✅ WhatsApp Connected Successfully!
+                </div>
+            </div>
         </div>
 
         <div class="card">
@@ -295,7 +354,6 @@ class WhatsAppAutoResponder {
             <h3>📊 Activity Log</h3>
             <div class="logs" id="activityLog">
                 <div>🔧 Dashboard loaded</div>
-                <div>📱 Connect your WhatsApp by scanning the QR code in the terminal</div>
             </div>
         </div>
     </div>
@@ -308,10 +366,52 @@ class WhatsAppAutoResponder {
         // Socket.io event listeners
         socket.on('connect', () => {
             console.log('Connected to server');
+            addLog('🌐 Connected to dashboard');
         });
 
         socket.on('log', (message) => {
             addLog(message);
+        });
+
+        // QR Code handling
+        socket.on('qr-code', (qrDataURL) => {
+            console.log('Received QR code');
+            const qrContainer = document.getElementById('qrContainer');
+            const qrCode = document.getElementById('qrCode');
+            const qrStatus = document.getElementById('qrStatus');
+            const connectedMessage = document.getElementById('connectedMessage');
+            
+            qrCode.src = qrDataURL;
+            qrContainer.style.display = 'block';
+            connectedMessage.style.display = 'none';
+            qrStatus.textContent = '📱 Scan QR Code with WhatsApp';
+            qrStatus.className = 'qr-status disconnected';
+        });
+
+        // Connection status handling
+        socket.on('connection-status', (status) => {
+            console.log('Connection status:', status);
+            const qrContainer = document.getElementById('qrContainer');
+            const qrStatus = document.getElementById('qrStatus');
+            const connectedMessage = document.getElementById('connectedMessage');
+            
+            if (status.connected) {
+                qrContainer.style.display = 'none';
+                connectedMessage.style.display = 'block';
+                qrStatus.textContent = '✅ WhatsApp Connected';
+                qrStatus.className = 'qr-status connected';
+            } else {
+                connectedMessage.style.display = 'none';
+                if (status.qrCode) {
+                    const qrCode = document.getElementById('qrCode');
+                    qrCode.src = status.qrCode;
+                    qrContainer.style.display = 'block';
+                    qrStatus.textContent = '📱 Scan QR Code with WhatsApp';
+                } else {
+                    qrStatus.textContent = 'Generating QR Code...';
+                }
+                qrStatus.className = 'qr-status disconnected';
+            }
         });
 
         // Load initial status
@@ -362,7 +462,6 @@ class WhatsAppAutoResponder {
                 const result = await response.json();
                 currentStatus.awayMode = result.awayMode;
                 updateUI();
-                addLog(\`🔄 Away mode: \${result.awayMode ? 'ON' : 'OFF'}\`);
             } catch (error) {
                 addLog('❌ Failed to toggle away mode');
             }
@@ -427,30 +526,8 @@ class WhatsAppAutoResponder {
     }
 }
 
-// Package.json dependencies needed:
-/*
-{
-  "name": "whatsapp-autoresponder",
-  "version": "1.0.0",
-  "description": "Auto-responder for WhatsApp using Web protocol",
-  "main": "index.js",
-  "dependencies": {
-    "whatsapp-web.js": "^1.23.0",
-    "qrcode-terminal": "^0.12.0",
-    "express": "^4.18.2"
-  },
-  "scripts": {
-    "start": "node index.js"
-  }
-}
-*/
-
 // Initialize the auto-responder
 console.log('🚀 Starting WhatsApp Auto-Responder...');
-console.log('📋 Make sure you have installed dependencies:');
-console.log('   npm install whatsapp-web.js qrcode-terminal express');
-console.log('');
-
 const autoResponder = new WhatsAppAutoResponder();
 
 // Graceful shutdown

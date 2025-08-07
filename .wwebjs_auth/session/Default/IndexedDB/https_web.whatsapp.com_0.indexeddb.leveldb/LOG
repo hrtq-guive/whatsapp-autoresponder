@@ -1,0 +1,34 @@
+2025/08/08-00:00:15.077 6603 Reusing MANIFEST /Users/kevinechraghi/Desktop/whatsapp-autoresponder/.wwebjs_auth/session/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2025/08/08-00:00:15.077 6603 Recovering log #393
+2025/08/08-00:00:15.147 6603 Reusing old log /Users/kevinechraghi/Desktop/whatsapp-autoresponder/.wwebjs_auth/session/Default/IndexedDB/https_web.whatsapp.com_0.indexeddb.leveldb/000393.log 
+2025/08/08-00:00:17.066 1ab03 Level-0 table #407: started
+2025/08/08-00:00:17.114 1ab03 Level-0 table #407: 816066 bytes OK
+2025/08/08-00:00:17.187 1ab03 Delete type=0 #393
+2025/08/08-00:00:17.190 1ab03 Manual compaction at level-0 from '\x00\x1b\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x1c\x00\x00\x00' @ 0 : 0; will stop at (end)
+2025/08/08-00:00:18.541 1bf03 Compacting 1@1 + 10@2 files
+2025/08/08-00:00:18.606 1bf03 Generated table #408@1: 47408 keys, 2210180 bytes
+2025/08/08-00:00:18.658 1bf03 Generated table #409@1: 23589 keys, 2179700 bytes
+2025/08/08-00:00:18.710 1bf03 Generated table #410@1: 2759 keys, 2155815 bytes
+2025/08/08-00:00:18.750 1bf03 Generated table #411@1: 3215 keys, 2145484 bytes
+2025/08/08-00:00:18.806 1bf03 Generated table #412@1: 30204 keys, 2235961 bytes
+2025/08/08-00:00:18.863 1bf03 Generated table #413@1: 29574 keys, 2256710 bytes
+2025/08/08-00:00:18.903 1bf03 Generated table #414@1: 11496 keys, 2141884 bytes
+2025/08/08-00:00:18.992 1bf03 Generated table #415@1: 103039 keys, 2254651 bytes
+2025/08/08-00:00:19.125 1bf03 Generated table #416@1: 99587 keys, 2248869 bytes
+2025/08/08-00:00:19.163 1bf03 Generated table #417@1: 17941 keys, 418922 bytes
+2025/08/08-00:00:19.163 1bf03 Compacted 1@1 + 10@2 files => 20248176 bytes
+2025/08/08-00:00:19.211 1bf03 compacted to: files[ 0 0 10 0 0 0 0 ]
+2025/08/08-00:00:19.212 1bf03 Delete type=2 #404
+2025/08/08-00:00:19.212 1bf03 Delete type=2 #407
+2025/08/08-00:00:19.212 1bf03 Delete type=2 #403
+2025/08/08-00:00:19.212 1bf03 Delete type=2 #402
+2025/08/08-00:00:19.212 1bf03 Delete type=2 #399
+2025/08/08-00:00:19.212 1bf03 Delete type=2 #400
+2025/08/08-00:00:19.212 1bf03 Delete type=2 #401
+2025/08/08-00:00:19.212 1bf03 Delete type=2 #398
+2025/08/08-00:00:19.212 1bf03 Delete type=2 #395
+2025/08/08-00:00:19.212 1bf03 Delete type=2 #396
+2025/08/08-00:00:19.212 1bf03 Delete type=2 #397
+2025/08/08-00:01:52.704 1bf03 Level-0 table #419: started
+2025/08/08-00:01:52.747 1bf03 Level-0 table #419: 1191807 bytes OK
+2025/08/08-00:01:52.788 1bf03 Delete type=0 #406

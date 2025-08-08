@@ -204,16 +204,13 @@ class WhatsAppAutoResponder {
             res.json({ awayMode: this.isAwayMode });
         });
 
-        // =======================================================
-        // NEW CODE ADDED HERE FOR THE IOS SHORTCUT
-        // =======================================================
+        // iOS Shortcut endpoint
         app.get('/api/toggle-away-shortcut', (req, res) => {
             this.isAwayMode = !this.isAwayMode;
             console.log(`🔄 Away mode triggered by shortcut: ${this.isAwayMode ? 'ON' : 'OFF'}`);
             this.broadcastLog(`🔄 Away mode triggered by shortcut: ${this.isAwayMode ? 'ON' : 'OFF'}`);
-            res.send(`Auto-reply mode has been set to ${this.isAwayMode}`);
+            res.send(`Auto-reply mode has been set to ${this.isAwayMode ? 'ON' : 'OFF'}`);
         });
-        // =======================================================
 
         app.post('/api/update-message', (req, res) => {
             const { message } = req.body;
@@ -239,13 +236,22 @@ class WhatsAppAutoResponder {
             }
         });
 
+        // NEW: Clear Reply History endpoint (Reset Timer Function)
+        app.post('/api/clear-history', (req, res) => {
+            this.lastReplies.clear();
+            console.log('🧹 Reply history cleared');
+            this.broadcastLog('🧹 Reply history cleared - all contacts can receive replies again');
+            res.json({ success: true });
+        });
+
         app.get('/api/status', (req, res) => {
             res.json({
                 awayMode: this.isAwayMode,
                 message: this.awayMessage,
                 vipContacts: Array.from(this.vipContacts),
                 isConnected: this.isConnected,
-                qrCode: this.isConnected ? null : this.qrString
+                qrCode: this.isConnected ? null : this.qrString,
+                replyHistoryCount: this.lastReplies.size
             });
         });
 
@@ -293,13 +299,14 @@ class WhatsAppAutoResponder {
         .toggle-btn.off { background: #ccc; }
         textarea { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; resize: vertical; }
         input { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
-        .btn { background: #128c7e; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; }
+        .btn { background: #128c7e; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin-right: 8px; }
         .btn:hover { background: #0d7377; }
         .form-group { margin-bottom: 16px; }
         label { display: block; margin-bottom: 6px; font-weight: 500; color: #333; }
         .vip-list { background: #f8f9fa; padding: 12px; border-radius: 6px; min-height: 60px; }
         .vip-item { background: white; padding: 8px 12px; margin: 4px 0; border-radius: 4px; border-left: 3px solid #25d366; }
         .logs { background: #2d3748; color: #e2e8f0; padding: 16px; border-radius: 6px; font-family: monospace; font-size: 12px; max-height: 200px; overflow-y: auto; }
+        .info-box { background: #e3f2fd; padding: 12px; border-radius: 6px; margin-bottom: 16px; border-left: 4px solid #2196f3; }
     </style>
 </head>
 <body>
@@ -337,6 +344,11 @@ class WhatsAppAutoResponder {
                     Toggle Away Mode
                 </button>
             </div>
+            <div class="info-box">
+                <strong>⏰ Reply Frequency:</strong> Each contact and group will receive the auto-reply message only once every 12 hours.<br>
+                <strong>👥 Groups:</strong> Groups will also receive auto-reply messages.<br>
+                <strong>⭐ VIP Contacts:</strong> Individual VIP contacts will never receive auto-replies.
+            </div>
         </div>
 
         <div class="card">
@@ -359,6 +371,15 @@ class WhatsAppAutoResponder {
             <div class="vip-list" id="vipList">
                 <em>No VIP contacts added yet</em>
             </div>
+        </div>
+
+        <div class="card">
+            <h3>🛠️ Management Tools</h3>
+            <button class="btn" onclick="clearHistory()" style="margin-right: 10px;">🧹 Clear Reply History</button>
+            <button class="btn" onclick="loadStatus()">♻️ Refresh Status</button>
+            <p style="margin-top: 12px; color: #666; font-size: 14px;">
+                Clear Reply History: Allows all contacts to receive auto-replies again immediately (resets 12-hour timer)
+            </p>
         </div>
 
         <div class="card">
@@ -515,6 +536,19 @@ class WhatsAppAutoResponder {
                 }
             } catch (error) {
                 addLog('❌ Failed to add VIP contact');
+            }
+        }
+
+        // NEW: Clear Reply History function (Reset Timer)
+        async function clearHistory() {
+            try {
+                const response = await fetch('/api/clear-history', { method: 'POST' });
+                const result = await response.json();
+                if (result.success) {
+                    addLog('🧹 Reply history cleared - all contacts can receive replies again');
+                }
+            } catch (error) {
+                addLog('❌ Failed to clear history');
             }
         }
 

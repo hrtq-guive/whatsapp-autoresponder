@@ -122,11 +122,17 @@ class WhatsAppAutoResponder {
         try {
             if (!this.isAwayMode) return;
             if (message.fromMe) return;
-            // if (message.from.includes('@g.us')) return;
 
             const contact = await message.getContact();
             const contactId = contact.id.user;
             const contactName = contact.name || contact.pushname || contactId;
+
+            // Check if contact/group is archived
+            const chat = await message.getChat();
+            if (chat.archived) {
+                console.log(`📁 Skipping archived chat: ${contactName}`);
+                return;
+            }
 
             if (this.vipContacts.has(contactId)) {
                 console.log(`🔕 Skipping VIP contact: ${contactName}`);
@@ -347,7 +353,8 @@ class WhatsAppAutoResponder {
             <div class="info-box">
                 <strong>⏰ Reply Frequency:</strong> Each contact and group will receive the auto-reply message only once every 12 hours.<br>
                 <strong>👥 Groups:</strong> Groups will also receive auto-reply messages.<br>
-                <strong>⭐ VIP Contacts:</strong> Individual VIP contacts will never receive auto-replies.
+                <strong>⭐ VIP Contacts:</strong> Individual VIP contacts will never receive auto-replies.<br>
+                <strong>📁 Archived Chats:</strong> Archived contacts and groups will never receive auto-replies.
             </div>
         </div>
 

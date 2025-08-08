@@ -13,7 +13,7 @@ class WhatsAppAutoResponder {
         this.awayMessage = "I'm away from my smartphone. If urgent, call me on +33 XX XX XX XX";
         this.vipContacts = new Set();
         this.lastReplies = new Map();
-        this.replyDelay = 30000;
+        this.replyDelay = 12 * 60 * 60 * 1000; // 12 hours
         this.io = null;
         this.qrString = null; // Store QR code for web display
         this.isConnected = false;

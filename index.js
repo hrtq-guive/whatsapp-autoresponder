@@ -510,7 +510,7 @@ class WhatsAppAutoResponder {
                     currentStatus.vipContacts = result.vips;
                     document.getElementById('vipPhone').value = '';
                     updateUI();
-                    addLog(`⭐ Added VIP: ${phoneNumber}`);
+                    addLog('⭐ Added VIP: ' + phoneNumber);
                 }
             } catch (error) {
                 addLog('❌ Failed to add VIP contact');
@@ -520,7 +520,7 @@ class WhatsAppAutoResponder {
         function addLog(message) {
             const log = document.getElementById('activityLog');
             const timestamp = new Date().toLocaleTimeString();
-            log.innerHTML += `<div>[${timestamp}] ${message}</div>`;
+            log.innerHTML += '<div>[' + timestamp + '] ' + message + '</div>';
             log.scrollTop = log.scrollHeight;
         }
 

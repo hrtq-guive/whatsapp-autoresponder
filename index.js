@@ -1,721 +1,608 @@
-// WhatsApp Auto-Responder with Web QR Code Display and Bot Commands
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+// index.js
+// Lazy — WhatsApp Auto-Responder (simple & stable dashboard)
+
+const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
-const QRCode = require('qrcode'); // For web QR generation
+const QRCode = require('qrcode');
 const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
 
 class WhatsAppAutoResponder {
-    constructor() {
-        this.client = null;
-        this.isAwayMode = false;
-        this.awayMessage = "I'm away from my smartphone. If urgent, call me on +33 XX XX XX XX";
-        this.vipContacts = new Set();
-        this.lastReplies = new Map();
-        this.replyDelay = 12 * 60 * 60 * 1000; // 12 hours
-        this.io = null;
-        this.qrString = null; // Store QR code for web display
+  constructor() {
+    this.client = null;
+    this.isAwayMode = false;
+    this.awayMessage =
+      "Hey! I'm a little off my phone right now. If it's urgent, please call me.";
+    this.vipContacts = new Set();
+    this.lastReplies = new Map();            // key = contactId OR groupId
+    this.replyDelay = 12 * 60 * 60 * 1000;   // 12h
+    this.qrString = null;                    // data URL for dashboard
+    this.isConnected = false;
+
+    this.initializeWebServer();
+    this.initializeWhatsApp();
+  }
+
+  initializeWhatsApp() {
+    console.log('🔧 Initializing WhatsApp client...');
+
+    this.client = new Client({
+      authStrategy: new LocalAuth({
+        name: 'auto-responder',
+        dataPath: './whatsapp-session',
+      }),
+      puppeteer: {
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--single-process',
+          '--disable-gpu',
+        ],
+      },
+    });
+
+    // QR
+    this.client.on('qr', async (qr) => {
+      console.log('📱 QR Code received (also printed in terminal)');
+      qrcode.generate(qr, { small: true });
+      try {
+        this.qrString = await QRCode.toDataURL(qr);
         this.isConnected = false;
-        
-        this.initializeWebServer();
-        this.initializeWhatsApp();
+      } catch (e) {
+        console.error('❌ Error generating QR data URL:', e);
+      }
+    });
+
+    // Ready
+    this.client.on('ready', () => {
+      console.log('✅ Lazy Auto-Responder is ready!');
+      console.log('🤖 Send "/help" to yourself for commands');
+      this.isConnected = true;
+      this.qrString = null;
+    });
+
+    // Auth failure
+    this.client.on('auth_failure', (msg) => {
+      console.error('❌ Authentication failed:', msg);
+      this.isConnected = false;
+    });
+
+    // Disconnected
+    this.client.on('disconnected', (reason) => {
+      console.log('📵 WhatsApp disconnected:', reason);
+      this.isConnected = false;
+      // a new QR will be emitted by the library soon
+    });
+
+    // New message
+    this.client.on('message_create', async (message) => {
+      await this.handleIncomingMessage(message);
+    });
+
+    this.client.initialize();
+  }
+
+  async handleIncomingMessage(message) {
+    try {
+      // Commands (only from you)
+      if (message.fromMe && message.body.startsWith('/')) {
+        await this.handleBotCommand(message);
+        return;
+      }
+
+      // Only reply in away mode; never to yourself
+      if (!this.isAwayMode) return;
+      if (message.fromMe) return;
+
+      const chat = await message.getChat();
+      const isGroup = chat.isGroup === true;
+
+      // Skip archived
+      if (chat.archived) return;
+
+      const contact = await message.getContact();
+      const contactId =
+        (contact.id && (contact.id._serialized || contact.id.user)) ||
+        'unknown-contact';
+      const contactName = contact.name || contact.pushname || contactId;
+
+      // VIPs suppress DMs only
+      if (!isGroup && this.vipContacts.has(contactId)) return;
+
+      // Per-group or per-contact 12h window
+      const groupId = chat.id?._serialized;
+      const replyKey = isGroup ? groupId : contactId;
+      const last = this.lastReplies.get(replyKey);
+      const now = Date.now();
+      if (last && now - last < this.replyDelay) return;
+
+      await message.reply(this.awayMessage);
+      this.lastReplies.set(replyKey, now);
+    } catch (e) {
+      console.error('❌ Error handling message:', e);
     }
+  }
 
-    initializeWhatsApp() {
-        console.log('🔧 Initializing WhatsApp client...');
-        
-        this.client = new Client({
-   		authStrategy: new LocalAuth({
-        	name: 'auto-responder',
-        		dataPath: './whatsapp-session'
-    	    }),
-            puppeteer: {
-                headless: true,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--single-process',
-                    '--disable-gpu'
-                ]
-            }
-        });
+  async handleBotCommand(message) {
+    try {
+      const parts = message.body.trim().slice(1).split(' ');
+      const cmd = parts[0].toLowerCase();
+      const params = parts.slice(1).join(' ');
 
-        // Event: QR Code received
-        this.client.on('qr', async (qr) => {
-            console.log('📱 QR Code received');
-            
-            // Show QR in terminal (existing functionality)
-            qrcode.generate(qr, { small: true });
-            console.log('👆 Or go to http://localhost:3000 to see QR code in browser');
-            
-            // Generate QR code data URL for web dashboard
-            try {
-                this.qrString = await QRCode.toDataURL(qr);
-                console.log('✅ QR Code generated for web dashboard');
-                
-                // Send QR code to all connected web clients
-                this.broadcastQRCode(this.qrString);
-                this.broadcastLog('📱 Scan the QR code above with your WhatsApp');
-            } catch (error) {
-                console.error('❌ Error generating QR code for web:', error);
-            }
-        });
+      let response = '';
+      switch (cmd) {
+        case 'help':
+          response =
+            '🍃 *Lazy — Auto-Responder*\n\n' +
+            '• /help — Show this menu\n' +
+            '• /status — Current status\n' +
+            '• /on — Turn away mode ON\n' +
+            '• /off — Turn away mode OFF\n' +
+            '• /toggle — Toggle away mode\n' +
+            '• /msg <text> — Update away message\n' +
+            '• /vip add <number> — Add VIP (DM only)\n' +
+            '• /vip remove <number> — Remove VIP\n' +
+            '• /vip list — Show VIPs\n' +
+            '• /clear — Clear reply history (12h timers)';
+          break;
 
-        // Event: Client ready
-        this.client.on('ready', () => {
-            console.log('✅ WhatsApp Auto-Responder is ready!');
-            console.log('🌐 Dashboard available at: http://localhost:3000');
-            console.log('🤖 Bot commands available! Send "/help" to yourself for available commands');
-            this.isConnected = true;
-            this.qrString = null; // Clear QR code when connected
-            this.broadcastConnectionStatus(true);
-            this.broadcastLog('✅ WhatsApp connected successfully!');
-            this.broadcastLog('🤖 Bot commands ready! Send "/help" to yourself for available commands');
-        });
+        case 'status':
+          response =
+            '📊 *Status*\n\n' +
+            `• Away Mode: ${this.isAwayMode ? '🟢 ON' : '🔴 OFF'}\n` +
+            `• VIPs: ${this.vipContacts.size}\n` +
+            `• Keys in window: ${this.lastReplies.size}\n` +
+            `• Message: "${this.awayMessage}"`;
+          break;
 
-        // Event: Authentication failure
-        this.client.on('auth_failure', (msg) => {
-            console.error('❌ Authentication failed:', msg);
-            this.isConnected = false;
-            this.broadcastConnectionStatus(false);
-            this.broadcastLog('❌ Authentication failed - refresh page to get new QR code');
-        });
+        case 'on':
+          this.isAwayMode = true;
+          response = '✅ Away mode ON — auto-replies active.';
+          break;
 
-        // Event: Disconnected
-        this.client.on('disconnected', (reason) => {
-            console.log('📵 WhatsApp disconnected:', reason);
-            this.isConnected = false;
-            this.qrString = null;
-            this.broadcastConnectionStatus(false);
-            this.broadcastLog('📵 WhatsApp disconnected - refresh page to reconnect');
-        });
+        case 'off':
+          this.isAwayMode = false;
+          response = '✅ Away mode OFF — auto-replies paused.';
+          break;
 
-        // Event: New message received
-        this.client.on('message_create', async (message) => {
-            await this.handleIncomingMessage(message);
-        });
+        case 'toggle':
+          this.isAwayMode = !this.isAwayMode;
+          response = `✅ Away mode ${this.isAwayMode ? 'ON' : 'OFF'}`;
+          break;
 
-        this.client.initialize();
-    }
+        case 'msg':
+          if (params) {
+            this.awayMessage = params;
+            response = `✏️ Message updated:\n"${this.awayMessage}"`;
+          } else {
+            response = '❌ Provide a message, e.g. /msg In a meeting.';
+          }
+          break;
 
-    // Broadcast QR code to web clients
-    broadcastQRCode(qrDataURL) {
-        if (this.io) {
-            this.io.emit('qr-code', qrDataURL);
+        case 'vip': {
+          const sub = parts[1]?.toLowerCase();
+          const num = parts[2];
+          if (sub === 'add' && num) {
+            this.vipContacts.add(num);
+            response = `✅ VIP added: ${num}`;
+          } else if (sub === 'remove' && num) {
+            this.vipContacts.delete(num);
+            response = `✅ VIP removed: ${num}`;
+          } else if (sub === 'list') {
+            const list = Array.from(this.vipContacts);
+            response = list.length
+              ? `⭐ *VIPs (DM only):*\n\n${list.map(v => `• ${v}`).join('\n')}`
+              : '⭐ No VIPs yet';
+          } else {
+            response =
+              'Usage:\n• /vip add 33123456789\n• /vip remove 33123456789\n• /vip list';
+          }
+          break;
         }
+
+        case 'clear':
+          this.lastReplies.clear();
+          response = '🧹 Timers cleared. Contacts & groups can receive replies again.';
+          break;
+
+        default:
+          response = `❌ Unknown command: ${cmd}\n\nType /help.`;
+      }
+
+      await message.reply(response);
+    } catch (e) {
+      console.error('❌ Error processing command:', e);
+      try { await message.reply('❌ Error processing command.'); } catch {}
     }
+  }
 
-    // Broadcast connection status
-    broadcastConnectionStatus(connected) {
-        if (this.io) {
-            this.io.emit('connection-status', { 
-                connected, 
-                qrCode: connected ? null : this.qrString 
-            });
-        }
-    }
+  initializeWebServer() {
+    const app = express();
+    app.use(express.json());
 
-    async handleIncomingMessage(message) {
-        try {
-            // Check if this is a bot command from the admin (you)
-            if (message.fromMe && message.body.startsWith('/')) {
-                await this.handleBotCommand(message);
-                return;
-            }
+    // Web UI
+    app.get('/', (req, res) => res.send(this.generateDashboardHTML()));
 
-            // Normal auto-reply logic (existing functionality)
-            if (!this.isAwayMode) return;
-            if (message.fromMe) return;
+    // APIs
+    app.post('/api/set-away', (req, res) => {
+      this.isAwayMode = !!(req.body && req.body.on);
+      res.json({ awayMode: this.isAwayMode });
+    });
 
-            const contact = await message.getContact();
-            const contactId = contact.id.user;
-            const contactName = contact.name || contact.pushname || contactId;
+    app.post('/api/update-message', (req, res) => {
+      const msg = (req.body && req.body.message || '').trim();
+      if (!msg) return res.status(400).json({ error: 'Invalid message' });
+      this.awayMessage = msg;
+      res.json({ success: true, message: this.awayMessage });
+    });
 
-            // Check if contact/group is archived
-            const chat = await message.getChat();
-            if (chat.archived) {
-                console.log(`📁 Skipping archived chat: ${contactName}`);
-                return;
-            }
+    app.post('/api/add-vip', (req, res) => {
+      const num = (req.body && req.body.phoneNumber || '').trim();
+      if (!num) return res.status(400).json({ error: 'Invalid phone number' });
+      this.vipContacts.add(num);
+      res.json({ success: true, vips: Array.from(this.vipContacts) });
+    });
 
-            if (this.vipContacts.has(contactId)) {
-                console.log(`🔕 Skipping VIP contact: ${contactName}`);
-                return;
-            }
+    app.post('/api/remove-vip', (req, res) => {
+      const num = (req.body && req.body.phoneNumber || '').trim();
+      if (!num) return res.status(400).json({ error: 'Invalid phone number' });
+      this.vipContacts.delete(num);
+      res.json({ success: true, vips: Array.from(this.vipContacts) });
+    });
 
-            const lastReplyTime = this.lastReplies.get(contactId);
-            const now = Date.now();
-            
-            if (lastReplyTime && (now - lastReplyTime) < this.replyDelay) {
-                console.log(`⏰ Rate limit: Already replied to ${contactName} recently`);
-                return;
-            }
+    app.post('/api/clear-history', (_req, res) => {
+      this.lastReplies.clear();
+      res.json({ success: true });
+    });
 
-            await this.sendAutoReply(message, contactName);
-            this.lastReplies.set(contactId, now);
+    app.get('/api/status', (_req, res) => {
+      res.json({
+        awayMode: this.isAwayMode,
+        message: this.awayMessage,
+        vipContacts: Array.from(this.vipContacts),
+        isConnected: this.isConnected,
+        qrCode: this.isConnected ? null : (this.qrString || null),
+        replyHistoryCount: this.lastReplies.size,
+      });
+    });
 
-        } catch (error) {
-            console.error('❌ Error handling message:', error);
-        }
-    }
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, () => {
+      console.log(`🌐 Dashboard running on http://localhost:${PORT}`);
+    });
+  }
 
-    async sendAutoReply(originalMessage, contactName) {
-        try {
-            console.log(`📤 Sending auto-reply to: ${contactName}`);
-            this.broadcastLog(`📤 Sending auto-reply to: ${contactName}`);
-            
-            await originalMessage.reply(this.awayMessage);
-            
-            console.log(`✅ Auto-reply sent to ${contactName}`);
-            this.broadcastLog(`✅ Auto-reply sent to ${contactName}`);
-            
-        } catch (error) {
-            console.error(`❌ Failed to send auto-reply to ${contactName}:`, error);
-            this.broadcastLog(`❌ Failed to send auto-reply to ${contactName}`);
-        }
-    }
-
-    async handleBotCommand(message) {
-        try {
-            const command = message.body.trim();
-            console.log(`🤖 Processing command: ${command}`);
-            
-            // Parse command and parameters
-            const parts = command.slice(1).split(' '); // Remove '/' and split
-            const cmd = parts[0].toLowerCase();
-            const params = parts.slice(1).join(' ');
-            
-            let response = '';
-            
-            switch (cmd) {
-                case 'help':
-                    response = `🤖 *Bot Commands*\n\n` +
-                              `• /help - Show this menu\n` +
-                              `• /status - Show current status\n` +
-                              `• /on - Turn away mode ON\n` +
-                              `• /off - Turn away mode OFF\n` +
-                              `• /toggle - Toggle away mode\n` +
-                              `• /msg <text> - Update away message\n` +
-                              `• /vip add <number> - Add VIP contact\n` +
-                              `• /vip list - Show VIP contacts\n` +
-                              `• /vip remove <number> - Remove VIP\n` +
-                              `• /clear - Clear reply history`;
-                    break;
-                    
-                case 'status':
-                    const vipCount = this.vipContacts.size;
-                    const historyCount = this.lastReplies.size;
-                    response = `📊 *Current Status*\n\n` +
-                              `• Away Mode: ${this.isAwayMode ? '🟢 ON' : '🔴 OFF'}\n` +
-                              `• VIP Contacts: ${vipCount}\n` +
-                              `• Reply History: ${historyCount} contacts\n` +
-                              `• Current Message: "${this.awayMessage}"`;
-                    break;
-                    
-                case 'on':
-                    this.isAwayMode = true;
-                    response = '✅ Away mode turned *ON*\nAuto-replies are now active!';
-                    this.broadcastLog('🤖 Away mode turned ON via bot command');
-                    break;
-                    
-                case 'off':
-                    this.isAwayMode = false;
-                    response = '✅ Away mode turned *OFF*\nAuto-replies are now disabled!';
-                    this.broadcastLog('🤖 Away mode turned OFF via bot command');
-                    break;
-                    
-                case 'toggle':
-                    this.isAwayMode = !this.isAwayMode;
-                    response = `✅ Away mode ${this.isAwayMode ? 'turned *ON*' : 'turned *OFF*'}`;
-                    this.broadcastLog(`🤖 Away mode toggled via bot command: ${this.isAwayMode ? 'ON' : 'OFF'}`);
-                    break;
-                    
-                case 'msg':
-                    if (params) {
-                        this.awayMessage = params;
-                        response = `✅ Away message updated!\n\nNew message: "${this.awayMessage}"`;
-                        this.broadcastLog('🤖 Away message updated via bot command');
-                    } else {
-                        response = '❌ Please provide a message.\nExample: /msg I am in a meeting';
-                    }
-                    break;
-                    
-                case 'vip':
-                    const subCmd = parts[1]?.toLowerCase();
-                    const phoneNumber = parts[2];
-                    
-                    if (subCmd === 'add' && phoneNumber) {
-                        this.vipContacts.add(phoneNumber);
-                        response = `✅ Added VIP contact: ${phoneNumber}`;
-                        this.broadcastLog(`🤖 VIP contact added: ${phoneNumber}`);
-                    } else if (subCmd === 'remove' && phoneNumber) {
-                        this.vipContacts.delete(phoneNumber);
-                        response = `✅ Removed VIP contact: ${phoneNumber}`;
-                        this.broadcastLog(`🤖 VIP contact removed: ${phoneNumber}`);
-                    } else if (subCmd === 'list') {
-                        const vips = Array.from(this.vipContacts);
-                        if (vips.length > 0) {
-                            response = `⭐ *VIP Contacts:*\n\n${vips.map(v => `• ${v}`).join('\n')}`;
-                        } else {
-                            response = '⭐ No VIP contacts added yet';
-                        }
-                    } else {
-                        response = '❌ Invalid VIP command.\nUsage:\n• /vip add 33123456789\n• /vip remove 33123456789\n• /vip list';
-                    }
-                    break;
-                    
-                case 'clear':
-                    this.lastReplies.clear();
-                    response = '🧹 Reply history cleared!\nAll contacts can now receive replies again.';
-                    this.broadcastLog('🤖 Reply history cleared via bot command');
-                    break;
-                    
-                default:
-                    response = `❌ Unknown command: ${cmd}\n\nType /help to see available commands.`;
-            }
-            
-            await message.reply(response);
-            console.log(`✅ Bot command processed: ${cmd}`);
-            
-        } catch (error) {
-            console.error('❌ Error processing bot command:', error);
-            await message.reply('❌ Error processing command. Please try again.');
-        }
-    }
-
-    initializeWebServer() {
-        const app = express();
-        const server = http.createServer(app);
-        this.io = new Server(server);
-        
-        app.use(express.json());
-        app.use(express.static('public'));
-        
-        // Socket.io connection handling
-        this.io.on('connection', (socket) => {
-            console.log('🌐 Dashboard connected');
-            
-            // Send current status to newly connected client
-            socket.emit('connection-status', { 
-                connected: this.isConnected, 
-                qrCode: this.isConnected ? null : this.qrString 
-            });
-            
-            if (this.qrString) {
-                socket.emit('qr-code', this.qrString);
-            }
-            
-            socket.emit('log', '🌐 Dashboard connected');
-        });
-        
-        // Dashboard route
-        app.get('/', (req, res) => {
-            const dashboardHTML = this.generateDashboardHTML();
-            res.send(dashboardHTML);
-        });
-
-        // API routes
-        app.post('/api/toggle-away', (req, res) => {
-            this.isAwayMode = !this.isAwayMode;
-            console.log(`🔄 Away mode: ${this.isAwayMode ? 'ON' : 'OFF'}`);
-            this.broadcastLog(`🔄 Away mode: ${this.isAwayMode ? 'ON' : 'OFF'}`);
-            res.json({ awayMode: this.isAwayMode });
-        });
-
-        // iOS Shortcut endpoint
-        app.get('/api/toggle-away-shortcut', (req, res) => {
-            this.isAwayMode = !this.isAwayMode;
-            console.log(`🔄 Away mode triggered by shortcut: ${this.isAwayMode ? 'ON' : 'OFF'}`);
-            this.broadcastLog(`🔄 Away mode triggered by shortcut: ${this.isAwayMode ? 'ON' : 'OFF'}`);
-            res.send(`Auto-reply mode has been set to ${this.isAwayMode ? 'ON' : 'OFF'}`);
-        });
-
-        app.post('/api/update-message', (req, res) => {
-            const { message } = req.body;
-            if (message && message.trim()) {
-                this.awayMessage = message.trim();
-                console.log(`✏️ Away message updated: ${this.awayMessage}`);
-                this.broadcastLog(`✏️ Away message updated`);
-                res.json({ success: true, message: this.awayMessage });
-            } else {
-                res.status(400).json({ error: 'Invalid message' });
-            }
-        });
-
-        app.post('/api/add-vip', (req, res) => {
-            const { phoneNumber } = req.body;
-            if (phoneNumber) {
-                this.vipContacts.add(phoneNumber);
-                console.log(`⭐ Added VIP contact: ${phoneNumber}`);
-                this.broadcastLog(`⭐ Added VIP contact: ${phoneNumber}`);
-                res.json({ success: true, vips: Array.from(this.vipContacts) });
-            } else {
-                res.status(400).json({ error: 'Invalid phone number' });
-            }
-        });
-
-        // Clear Reply History endpoint (Reset Timer Function)
-        app.post('/api/clear-history', (req, res) => {
-            this.lastReplies.clear();
-            console.log('🧹 Reply history cleared');
-            this.broadcastLog('🧹 Reply history cleared - all contacts can receive replies again');
-            res.json({ success: true });
-        });
-
-        app.get('/api/status', (req, res) => {
-            res.json({
-                awayMode: this.isAwayMode,
-                message: this.awayMessage,
-                vipContacts: Array.from(this.vipContacts),
-                isConnected: this.isConnected,
-                qrCode: this.isConnected ? null : this.qrString,
-                replyHistoryCount: this.lastReplies.size
-            });
-        });
-
-        const PORT = process.env.PORT || 3000;
-        server.listen(PORT, () => {
-            console.log(`🌐 Dashboard server running on http://localhost:${PORT}`);
-        });
-    }
-
-    broadcastLog(message) {
-        if (this.io) {
-            this.io.emit('log', message);
-        }
-    }
-
-    generateDashboardHTML() {
-        return `
+  generateDashboardHTML() {
+    return `
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WhatsApp Auto-Responder Dashboard</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; padding: 20px; }
-        .container { max-width: 800px; margin: 0 auto; }
-        .card { background: white; border-radius: 8px; padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        .header { text-align: center; color: #25d366; margin-bottom: 30px; }
-        
-        /* QR Code Section */
-        .qr-section { text-align: center; padding: 20px; background: #f8f9fa; border-radius: 8px; margin-bottom: 20px; }
-        .qr-code { max-width: 256px; margin: 0 auto; border: 2px solid #25d366; border-radius: 8px; }
-        .qr-status { font-size: 18px; margin-bottom: 16px; }
-        .qr-status.connected { color: #25d366; }
-        .qr-status.disconnected { color: #666; }
-        .qr-instructions { color: #666; margin-top: 12px; font-size: 14px; }
-        
-        .status { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
-        .status-indicator { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
-        .status-indicator.on { background: #25d366; }
-        .status-indicator.off { background: #ccc; }
-        .toggle-btn { background: #25d366; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 16px; }
-        .toggle-btn:hover { background: #1ea952; }
-        .toggle-btn.off { background: #ccc; }
-        textarea { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; resize: vertical; }
-        input { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
-        .btn { background: #128c7e; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin-right: 8px; }
-        .btn:hover { background: #0d7377; }
-        .form-group { margin-bottom: 16px; }
-        label { display: block; margin-bottom: 6px; font-weight: 500; color: #333; }
-        .vip-list { background: #f8f9fa; padding: 12px; border-radius: 6px; min-height: 60px; }
-        .vip-item { background: white; padding: 8px 12px; margin: 4px 0; border-radius: 4px; border-left: 3px solid #25d366; }
-        .logs { background: #2d3748; color: #e2e8f0; padding: 16px; border-radius: 6px; font-family: monospace; font-size: 12px; max-height: 200px; overflow-y: auto; }
-        .info-box { background: #e3f2fd; padding: 12px; border-radius: 6px; margin-bottom: 16px; border-left: 4px solid #2196f3; }
-        .bot-info-box { background: #f3e5f5; padding: 12px; border-radius: 6px; margin-bottom: 16px; border-left: 4px solid #9c27b0; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>📱 WhatsApp Auto-Responder</h1>
-            <p>Manage your away messages and digital boundaries</p>
-        </div>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Lazy — WhatsApp Auto-Responder</title>
+<style>
+  :root{
+    --bg:#f6f7fb; --card:#ffffff; --ink:#111827; --muted:#6b7280;
+    --brand:#34c759; --brand-600:#2fb052; --border:#e5e7eb;
+    --ring: rgba(52,199,89,.25); --shadow: 0 10px 30px rgba(0,0,0,.06);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Inter,Arial,sans-serif;background:var(--bg);color:var(--ink)}
+  .wrap{max-width:1120px;margin:0 auto;padding:28px}
+  h1{font-size:22px;margin:0}
+  .subtitle{color:var(--muted);margin-top:6px}
+  .grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}
+  @media(min-width:1024px){.grid{grid-template-columns: 1.1fr 1fr 1fr}}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px;box-shadow:var(--shadow)}
+  .card h3{margin:0 0 12px 0;font-size:16px}
+  .muted{color:var(--muted);font-size:13px}
 
-        <div class="card">
-            <div class="qr-section">
-                <div class="qr-status" id="qrStatus">Connecting to WhatsApp...</div>
-                <div id="qrContainer" style="display: none;">
-                    <img id="qrCode" class="qr-code" alt="QR Code">
-                    <div class="qr-instructions">
-                        1. Open WhatsApp on your phone<br>
-                        2. Go to Settings → Linked Devices<br>
-                        3. Tap "Link a Device"<br>
-                        4. Scan this QR code
-                    </div>
-                </div>
-                <div id="connectedMessage" style="display: none; color: #25d366; font-size: 18px;">
-                    ✅ WhatsApp Connected Successfully!
-                </div>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="bot-info-box">
-                <strong>🤖 New: Bot Commands Available!</strong><br>
-                You can now control the auto-responder directly from WhatsApp by sending commands to yourself.<br>
-                Send <strong>/help</strong> to yourself in WhatsApp to see all available commands.
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="status">
-                <div style="display: flex; align-items: center;">
-                    <div class="status-indicator" id="statusIndicator"></div>
-                    <span id="statusText">Loading...</span>
-                </div>
-                <button class="toggle-btn" id="toggleBtn" onclick="toggleAwayMode()">
-                    Toggle Away Mode
-                </button>
-            </div>
-            <div class="info-box">
-                <strong>⏰ Reply Frequency:</strong> Each contact and group will receive the auto-reply message only once every 12 hours.<br>
-                <strong>👥 Groups:</strong> Groups will also receive auto-reply messages.<br>
-                <strong>⭐ VIP Contacts:</strong> Individual VIP contacts will never receive auto-replies.<br>
-                <strong>📁 Archived Chats:</strong> Archived contacts and groups will never receive auto-replies.
-            </div>
-        </div>
-
-        <div class="card">
-            <h3>📝 Away Message</h3>
-            <div class="form-group">
-                <label for="awayMessage">Message sent to contacts when away:</label>
-                <textarea id="awayMessage" rows="3" placeholder="I'm away from my smartphone. If urgent, call me on +33 XX XX XX XX"></textarea>
-            </div>
-            <button class="btn" onclick="updateMessage()">Update Message</button>
-            <p style="margin-top: 8px; color: #666; font-size: 14px;">💡 You can also use: <code>/msg Your new message</code> in WhatsApp</p>
-        </div>
-
-        <div class="card">
-            <h3>⭐ VIP Contacts</h3>
-            <p style="margin-bottom: 16px; color: #666;">VIP contacts won't receive auto-replies</p>
-            <div class="form-group">
-                <label for="vipPhone">Add VIP Contact (phone number):</label>
-                <input type="text" id="vipPhone" placeholder="e.g., 33123456789">
-            </div>
-            <button class="btn" onclick="addVIP()">Add VIP</button>
-            <p style="margin-top: 8px; color: #666; font-size: 14px;">💡 You can also use: <code>/vip add 33123456789</code> in WhatsApp</p>
-            <div class="vip-list" id="vipList">
-                <em>No VIP contacts added yet</em>
-            </div>
-        </div>
-
-        <div class="card">
-            <h3>🛠️ Management Tools</h3>
-            <button class="btn" onclick="clearHistory()" style="margin-right: 10px;">🧹 Clear Reply History</button>
-            <button class="btn" onclick="loadStatus()">♻️ Refresh Status</button>
-            <p style="margin-top: 12px; color: #666; font-size: 14px;">
-                Clear Reply History: Allows all contacts to receive auto-replies again immediately (resets 12-hour timer)<br>
-                💡 You can also use: <code>/clear</code> in WhatsApp
-            </p>
-        </div>
-
-        <div class="card">
-            <h3>📊 Activity Log</h3>
-            <div class="logs" id="activityLog">
-                <div>🔧 Dashboard loaded</div>
-            </div>
-        </div>
-    </div>
-
-    <script src="/socket.io/socket.io.js"></script>
-    <script>
-        let currentStatus = { awayMode: false, message: '', vipContacts: [], isConnected: false };
-        const socket = io();
-
-        // Socket.io event listeners
-        socket.on('connect', () => {
-            console.log('Connected to server');
-            addLog('🌐 Connected to dashboard');
-        });
-
-        socket.on('log', (message) => {
-            addLog(message);
-        });
-
-        // QR Code handling
-        socket.on('qr-code', (qrDataURL) => {
-            console.log('Received QR code');
-            const qrContainer = document.getElementById('qrContainer');
-            const qrCode = document.getElementById('qrCode');
-            const qrStatus = document.getElementById('qrStatus');
-            const connectedMessage = document.getElementById('connectedMessage');
-            
-            qrCode.src = qrDataURL;
-            qrContainer.style.display = 'block';
-            connectedMessage.style.display = 'none';
-            qrStatus.textContent = '📱 Scan QR Code with WhatsApp';
-            qrStatus.className = 'qr-status disconnected';
-        });
-
-        // Connection status handling
-        socket.on('connection-status', (status) => {
-            console.log('Connection status:', status);
-            const qrContainer = document.getElementById('qrContainer');
-            const qrStatus = document.getElementById('qrStatus');
-            const connectedMessage = document.getElementById('connectedMessage');
-            
-            if (status.connected) {
-                qrContainer.style.display = 'none';
-                connectedMessage.style.display = 'block';
-                qrStatus.textContent = '✅ WhatsApp Connected';
-                qrStatus.className = 'qr-status connected';
-            } else {
-                connectedMessage.style.display = 'none';
-                if (status.qrCode) {
-                    const qrCode = document.getElementById('qrCode');
-                    qrCode.src = status.qrCode;
-                    qrContainer.style.display = 'block';
-                    qrStatus.textContent = '📱 Scan QR Code with WhatsApp';
-                } else {
-                    qrStatus.textContent = 'Generating QR Code...';
-                }
-                qrStatus.className = 'qr-status disconnected';
-            }
-        });
-
-        // Load initial status
-        async function loadStatus() {
-            try {
-                const response = await fetch('/api/status');
-                currentStatus = await response.json();
-                updateUI();
-            } catch (error) {
-                console.error('Failed to load status:', error);
-            }
-        }
-
-        function updateUI() {
-            const indicator = document.getElementById('statusIndicator');
-            const statusText = document.getElementById('statusText');
-            const toggleBtn = document.getElementById('toggleBtn');
-            const awayMessage = document.getElementById('awayMessage');
-            const vipList = document.getElementById('vipList');
-
-            // Update status
-            if (currentStatus.awayMode) {
-                indicator.className = 'status-indicator on';
-                statusText.textContent = 'Away Mode: ON';
-                toggleBtn.className = 'toggle-btn';
-            } else {
-                indicator.className = 'status-indicator off';
-                statusText.textContent = 'Away Mode: OFF';
-                toggleBtn.className = 'toggle-btn off';
-            }
-
-            // Update message
-            awayMessage.value = currentStatus.message;
-
-            // Update VIP list
-            if (currentStatus.vipContacts.length > 0) {
-                vipList.innerHTML = currentStatus.vipContacts
-                    .map(contact => '<div class="vip-item">📞 ' + contact + '</div>')
-                    .join('');
-            } else {
-                vipList.innerHTML = '<em>No VIP contacts added yet</em>';
-            }
-        }
-
-        async function toggleAwayMode() {
-            try {
-                const response = await fetch('/api/toggle-away', { method: 'POST' });
-                const result = await response.json();
-                currentStatus.awayMode = result.awayMode;
-                updateUI();
-            } catch (error) {
-                addLog('❌ Failed to toggle away mode');
-            }
-        }
-
-        async function updateMessage() {
-            const message = document.getElementById('awayMessage').value;
-            try {
-                const response = await fetch('/api/update-message', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message })
-                });
-                const result = await response.json();
-                if (result.success) {
-                    currentStatus.message = result.message;
-                    addLog('✅ Away message updated');
-                }
-            } catch (error) {
-                addLog('❌ Failed to update message');
-            }
-        }
-
-        async function addVIP() {
-            const phoneNumber = document.getElementById('vipPhone').value;
-            if (!phoneNumber) return;
-            
-            try {
-                const response = await fetch('/api/add-vip', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ phoneNumber })
-                });
-                const result = await response.json();
-                if (result.success) {
-                    currentStatus.vipContacts = result.vips;
-                    document.getElementById('vipPhone').value = '';
-                    updateUI();
-                    addLog('⭐ Added VIP: ' + phoneNumber);
-                }
-            } catch (error) {
-                addLog('❌ Failed to add VIP contact');
-            }
-        }
-
-        // Clear Reply History function (Reset Timer)
-        async function clearHistory() {
-            try {
-                const response = await fetch('/api/clear-history', { method: 'POST' });
-                const result = await response.json();
-                if (result.success) {
-                    addLog('🧹 Reply history cleared - all contacts can receive replies again');
-                }
-            } catch (error) {
-                addLog('❌ Failed to clear history');
-            }
-        }
-
-        function addLog(message) {
-            const log = document.getElementById('activityLog');
-            const timestamp = new Date().toLocaleTimeString();
-            log.innerHTML += '<div>[' + timestamp + '] ' + message + '</div>';
-            log.scrollTop = log.scrollHeight;
-        }
-
-        // Load status on page load
-        loadStatus();
-        
-        // Refresh status every 30 seconds
-        setInterval(loadStatus, 30000);
-    </script>
-</body>
-</html>
-        `;
-    }
+  /* Switch container */
+.switch-wrap {
+  width: 76px; /* matches toggle width */
 }
 
-// Initialize the auto-responder
-console.log('🚀 Starting WhatsApp Auto-Responder...');
-const autoResponder = new WhatsAppAutoResponder();
+/* Toggle body */
+.switch {
+  position: relative;
+  width: 76px;
+  height: 38px;
+  background: #e9e9ec;
+  border-radius: 999px;
+  border: 1px solid #d1d5db;
+  cursor: pointer;
+  transition: 0.2s;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 32px;
+  height: 32px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  transition: 0.2s;
+}
+.switch.on {
+  background: var(--brand);
+}
+.switch.on::after {
+  left: 41px;
+}
 
-// Graceful shutdown
-process.on('SIGINT', () => {
-    console.log('\n👋 Shutting down gracefully...');
-    if (autoResponder.client) {
-        autoResponder.client.destroy();
+/* Toggle labels */
+.switch-labels {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 76px; /* aligns with toggle */
+  padding: 0 6px; /* pull in text from edges */
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+/* Label states */
+.switch-labels .on {
+  color: #9ca3af;
+  font-weight: 600;
+}
+.switch.on + .switch-labels .on {
+  color: var(--brand-600);
+}
+.switch.on + .switch-labels .off {
+  color: #9ca3af;
+}
+.switch:not(.on) + .switch-labels .off {
+  color: #111827;
+  font-weight: 600;
+}
+
+
+  textarea,input{width:100%;background:#fafafa;border:1px solid var(--border);color:var(--ink);padding:10px;border-radius:12px;outline:none}
+  textarea:focus,input:focus{border-color:var(--brand); box-shadow:0 0 0 4px var(--ring)}
+  label{display:block;font-weight:600;margin:10px 0 6px}
+  .btn{cursor:pointer;border:none;border-radius:12px;padding:10px 14px;color:white;background:var(--brand);font-weight:600}
+  .btn:hover{background:var(--brand-600)}
+  .btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--border)}
+  .btn.danger{background:#ef4444}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+
+  .qr-wrap{display:grid;place-items:center;gap:12px;padding:16px;border-radius:12px;background:#fafafa;border:1px dashed var(--border)}
+  .qr-code{max-width:240px;border-radius:10px;border:2px solid #eef2ee;box-shadow:0 0 0 6px #f0fbf3}
+
+  .list{display:grid;gap:8px}
+  .vip-item{display:flex;align-items:center;justify-content:space-between;background:#fafafa;border:1px solid var(--border);padding:8px 10px;border-radius:12px}
+  .vip-item button{border:none;background:transparent;color:#ef4444;cursor:pointer;font-size:14px}
+
+  .log{background:#ffffff;color:#1f2937;border-radius:12px;padding:12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;max-height:280px;overflow:auto;border:1px solid var(--border)}
+  .log div{padding:4px 0;border-bottom:1px dashed #e5e7eb}
+  .log div:last-child{border-bottom:none}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Lazy — WhatsApp Auto-Responder</h1>
+    <div class="subtitle">Simple, calm, and out of your way.</div>
+
+    <div class="grid">
+      <!-- 1) SETUP -->
+      <div class="card">
+        <h3>1) Setup</h3>
+        <div class="muted" style="margin-bottom:10px;">
+          Reply window: DMs → one per contact / 12h • Groups → one per group / 12h • VIPs suppress DMs only • Archived chats never get replies.
+        </div>
+        <div class="qr-wrap" style="margin-top:10px;">
+          <div class="muted" id="qrStatus">Connecting to WhatsApp...</div>
+          <div id="qrContainer" style="display:none;">
+            <img id="qrCode" class="qr-code" alt="QR Code">
+            <div class="muted">WhatsApp → Settings → Linked Devices → Link a Device → Scan</div>
+          </div>
+          <div id="connectedMessage" style="display:none;color:#166534;font-weight:600;">
+            ✅ Connected to WhatsApp
+          </div>
+        </div>
+      </div>
+
+     <!-- 2) CONTROLS -->
+<div class="card">
+  <h3>2) Controls</h3>
+  <label>Away Mode</label>
+  <div class="switch-wrap">
+    <div id="awaySwitch" class="switch" role="switch" aria-checked="false" tabindex="0"></div>
+    <div class="switch-labels">
+      <span class="off">OFF</span>
+      <span class="on">ON</span>
+    </div>
+  </div>
+
+  <label for="awayMessage">Away message</label>
+  <textarea id="awayMessage" rows="3" placeholder="Hey! I'm a little off my phone right now. If it's urgent, please call me."></textarea>
+  <div class="row" style="margin-top:10px;">
+    <button class="btn" onclick="updateMessage()">Update Message</button>
+  </div>
+
+  <div style="margin-top:16px;">
+    <label for="vipPhone">VIP contact (phone number)</label>
+    <input id="vipPhone" placeholder="e.g., 33123456789" />
+    <div class="row" style="margin-top:10px;">
+      <button class="btn" onclick="addVIP()">Add VIP</button>
+      <button class="btn ghost" onclick="loadStatus()">Refresh</button>
+    </div>
+    <div id="vipList" class="list" style="margin-top:10px;">
+      <div class="muted"><em>No VIP contacts yet</em></div>
+    </div>
+  </div>
+</div>
+
+
+      <!-- 3) LOGS -->
+      <div class="card">
+        <h3>3) Logs</h3>
+        <div id="activityLog" class="log"><div>[${new Date().toLocaleTimeString()}] 🔧 Dashboard loaded</div></div>
+        <div class="row" style="margin-top:10px;">
+          <button class="btn ghost" onclick="refresh()">Refresh</button>
+          <button class="btn danger" onclick="clearHistory()">Reset 12h Timers</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Minimal, robust dashboard logic: poll /api/status and update DOM
+    let state = { awayMode:false, message:"", vipContacts:[], isConnected:false, qrCode:null };
+
+    function logLine(text){
+      const log = document.getElementById('activityLog');
+      if (!log) return;
+      const row = document.createElement('div');
+      row.textContent = '[' + new Date().toLocaleTimeString() + '] ' + text;
+      log.appendChild(row);
+      log.scrollTop = log.scrollHeight;
     }
-    process.exit(0);
+
+    function setSwitch(on){
+      const sw = document.getElementById('awaySwitch');
+      if (!sw) return;
+      sw.classList.toggle('on', !!on);
+      sw.setAttribute('aria-checked', on ? 'true' : 'false');
+    }
+
+    async function refresh(){
+      try {
+        const res = await fetch('/api/status', { cache:'no-store' });
+        state = await res.json();
+        render();
+      } catch (e) {
+        console.error('status error', e);
+        logLine('❌ Failed to load status');
+      }
+    }
+
+    function render(){
+      // Setup
+      const qrContainer = document.getElementById('qrContainer');
+      const qrStatus = document.getElementById('qrStatus');
+      const connectedMessage = document.getElementById('connectedMessage');
+      const qrImg = document.getElementById('qrCode');
+
+      if (state.isConnected) {
+        if (qrContainer) qrContainer.style.display = 'none';
+        if (connectedMessage) connectedMessage.style.display = 'block';
+        if (qrStatus) qrStatus.textContent = '✅ Connected';
+      } else {
+        if (connectedMessage) connectedMessage.style.display = 'none';
+        if (qrStatus) qrStatus.textContent = state.qrCode ? '📱 Scan QR Code with WhatsApp' : 'Generating QR Code...';
+        if (qrContainer) qrContainer.style.display = state.qrCode ? 'block' : 'none';
+        if (qrImg && state.qrCode) qrImg.src = state.qrCode;
+      }
+
+      // Controls
+      setSwitch(state.awayMode);
+      const msg = document.getElementById('awayMessage');
+      if (msg) msg.value = state.message;
+
+      const vipList = document.getElementById('vipList');
+      if (vipList) {
+        if (state.vipContacts && state.vipContacts.length) {
+          vipList.innerHTML = state.vipContacts.map(v =>
+            '<div class="vip-item">' +
+              '<div>📞 ' + v + '</div>' +
+              '<button title="Remove" onclick="removeVIP(\\'' + v + '\\')">🗑️</button>' +
+            '</div>'
+          ).join('');
+        } else {
+          vipList.innerHTML = '<div class="muted"><em>No VIP contacts yet</em></div>';
+        }
+      }
+    }
+
+    async function setAway(on){
+      try {
+        const r = await fetch('/api/set-away', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({on})});
+        const j = await r.json();
+        state.awayMode = j.awayMode;
+        render();
+        logLine('🔄 Away mode → ' + (state.awayMode ? 'ON' : 'OFF'));
+      } catch(e){ console.error(e); }
+    }
+    function toggleSwitch(){
+      const isOn = document.getElementById('awaySwitch')?.classList.contains('on');
+      setAway(!isOn);
+    }
+
+    async function updateMessage(){
+      const message = document.getElementById('awayMessage').value;
+      try{
+        const r = await fetch('/api/update-message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message})});
+        const j = await r.json();
+        if (j.success) { state.message = j.message; logLine('✅ Away message updated'); }
+      } catch(e){ console.error(e); }
+    }
+
+    async function addVIP(){
+      const phone = document.getElementById('vipPhone').value.trim();
+      if (!phone) return;
+      try{
+        const r = await fetch('/api/add-vip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phoneNumber:phone})});
+        const j = await r.json();
+        if (j.success){ state.vipContacts = j.vips; document.getElementById('vipPhone').value=''; render(); logLine('⭐ VIP added: ' + phone); }
+      } catch(e){ console.error(e); }
+    }
+
+    async function removeVIP(phone){
+      try{
+        const r = await fetch('/api/remove-vip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phoneNumber:phone})});
+        const j = await r.json();
+        if (j.success){ state.vipContacts = j.vips; render(); logLine('🗑️ VIP removed: ' + phone); }
+      } catch(e){ console.error(e); }
+    }
+
+    async function clearHistory(){
+      try{ 
+        const r = await fetch('/api/clear-history',{method:'POST'});
+        const j = await r.json();
+        if (j.success) logLine('🧹 Timers reset');
+      } catch(e){ console.error(e); }
+    }
+
+    // Wire events
+    document.addEventListener('click', (e)=>{ if(e.target.id==='awaySwitch') toggleSwitch(); });
+    document.addEventListener('keydown', (e)=>{
+      if(e.target.id==='awaySwitch' && (e.key==='Enter' || e.key===' ')){ e.preventDefault(); toggleSwitch(); }
+    });
+
+    // Expose functions
+    window.refresh = refresh;
+    window.updateMessage = updateMessage;
+    window.addVIP = addVIP;
+    window.removeVIP = removeVIP;
+    window.clearHistory = clearHistory;
+
+    // Start polling
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>
+    `;
+  }
+}
+
+// ==== Boot ====
+console.log('🚀 Starting Lazy Auto-Responder...');
+const appInstance = new WhatsAppAutoResponder();
+
+// ==== Graceful shutdown ====
+process.on('SIGINT', () => {
+  console.log('\n👋 Shutting down gracefully...');
+  if (appInstance.client) appInstance.client.destroy();
+  process.exit(0);
 });

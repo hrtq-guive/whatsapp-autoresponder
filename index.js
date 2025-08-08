@@ -1,4 +1,4 @@
-// WhatsApp Auto-Responder with Web QR Code Display
+// WhatsApp Auto-Responder with Web QR Code Display and Bot Commands
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const QRCode = require('qrcode'); // For web QR generation
@@ -70,10 +70,12 @@ class WhatsAppAutoResponder {
         this.client.on('ready', () => {
             console.log('✅ WhatsApp Auto-Responder is ready!');
             console.log('🌐 Dashboard available at: http://localhost:3000');
+            console.log('🤖 Bot commands available! Send "/help" to yourself for available commands');
             this.isConnected = true;
             this.qrString = null; // Clear QR code when connected
             this.broadcastConnectionStatus(true);
             this.broadcastLog('✅ WhatsApp connected successfully!');
+            this.broadcastLog('🤖 Bot commands ready! Send "/help" to yourself for available commands');
         });
 
         // Event: Authentication failure
@@ -120,6 +122,13 @@ class WhatsAppAutoResponder {
 
     async handleIncomingMessage(message) {
         try {
+            // Check if this is a bot command from the admin (you)
+            if (message.fromMe && message.body.startsWith('/')) {
+                await this.handleBotCommand(message);
+                return;
+            }
+
+            // Normal auto-reply logic (existing functionality)
             if (!this.isAwayMode) return;
             if (message.fromMe) return;
 
@@ -168,6 +177,114 @@ class WhatsAppAutoResponder {
         } catch (error) {
             console.error(`❌ Failed to send auto-reply to ${contactName}:`, error);
             this.broadcastLog(`❌ Failed to send auto-reply to ${contactName}`);
+        }
+    }
+
+    async handleBotCommand(message) {
+        try {
+            const command = message.body.trim();
+            console.log(`🤖 Processing command: ${command}`);
+            
+            // Parse command and parameters
+            const parts = command.slice(1).split(' '); // Remove '/' and split
+            const cmd = parts[0].toLowerCase();
+            const params = parts.slice(1).join(' ');
+            
+            let response = '';
+            
+            switch (cmd) {
+                case 'help':
+                    response = `🤖 *Bot Commands*\n\n` +
+                              `• /help - Show this menu\n` +
+                              `• /status - Show current status\n` +
+                              `• /on - Turn away mode ON\n` +
+                              `• /off - Turn away mode OFF\n` +
+                              `• /toggle - Toggle away mode\n` +
+                              `• /msg <text> - Update away message\n` +
+                              `• /vip add <number> - Add VIP contact\n` +
+                              `• /vip list - Show VIP contacts\n` +
+                              `• /vip remove <number> - Remove VIP\n` +
+                              `• /clear - Clear reply history`;
+                    break;
+                    
+                case 'status':
+                    const vipCount = this.vipContacts.size;
+                    const historyCount = this.lastReplies.size;
+                    response = `📊 *Current Status*\n\n` +
+                              `• Away Mode: ${this.isAwayMode ? '🟢 ON' : '🔴 OFF'}\n` +
+                              `• VIP Contacts: ${vipCount}\n` +
+                              `• Reply History: ${historyCount} contacts\n` +
+                              `• Current Message: "${this.awayMessage}"`;
+                    break;
+                    
+                case 'on':
+                    this.isAwayMode = true;
+                    response = '✅ Away mode turned *ON*\nAuto-replies are now active!';
+                    this.broadcastLog('🤖 Away mode turned ON via bot command');
+                    break;
+                    
+                case 'off':
+                    this.isAwayMode = false;
+                    response = '✅ Away mode turned *OFF*\nAuto-replies are now disabled!';
+                    this.broadcastLog('🤖 Away mode turned OFF via bot command');
+                    break;
+                    
+                case 'toggle':
+                    this.isAwayMode = !this.isAwayMode;
+                    response = `✅ Away mode ${this.isAwayMode ? 'turned *ON*' : 'turned *OFF*'}`;
+                    this.broadcastLog(`🤖 Away mode toggled via bot command: ${this.isAwayMode ? 'ON' : 'OFF'}`);
+                    break;
+                    
+                case 'msg':
+                    if (params) {
+                        this.awayMessage = params;
+                        response = `✅ Away message updated!\n\nNew message: "${this.awayMessage}"`;
+                        this.broadcastLog('🤖 Away message updated via bot command');
+                    } else {
+                        response = '❌ Please provide a message.\nExample: /msg I am in a meeting';
+                    }
+                    break;
+                    
+                case 'vip':
+                    const subCmd = parts[1]?.toLowerCase();
+                    const phoneNumber = parts[2];
+                    
+                    if (subCmd === 'add' && phoneNumber) {
+                        this.vipContacts.add(phoneNumber);
+                        response = `✅ Added VIP contact: ${phoneNumber}`;
+                        this.broadcastLog(`🤖 VIP contact added: ${phoneNumber}`);
+                    } else if (subCmd === 'remove' && phoneNumber) {
+                        this.vipContacts.delete(phoneNumber);
+                        response = `✅ Removed VIP contact: ${phoneNumber}`;
+                        this.broadcastLog(`🤖 VIP contact removed: ${phoneNumber}`);
+                    } else if (subCmd === 'list') {
+                        const vips = Array.from(this.vipContacts);
+                        if (vips.length > 0) {
+                            response = `⭐ *VIP Contacts:*\n\n${vips.map(v => `• ${v}`).join('\n')}`;
+                        } else {
+                            response = '⭐ No VIP contacts added yet';
+                        }
+                    } else {
+                        response = '❌ Invalid VIP command.\nUsage:\n• /vip add 33123456789\n• /vip remove 33123456789\n• /vip list';
+                    }
+                    break;
+                    
+                case 'clear':
+                    this.lastReplies.clear();
+                    response = '🧹 Reply history cleared!\nAll contacts can now receive replies again.';
+                    this.broadcastLog('🤖 Reply history cleared via bot command');
+                    break;
+                    
+                default:
+                    response = `❌ Unknown command: ${cmd}\n\nType /help to see available commands.`;
+            }
+            
+            await message.reply(response);
+            console.log(`✅ Bot command processed: ${cmd}`);
+            
+        } catch (error) {
+            console.error('❌ Error processing bot command:', error);
+            await message.reply('❌ Error processing command. Please try again.');
         }
     }
 
@@ -242,7 +359,7 @@ class WhatsAppAutoResponder {
             }
         });
 
-        // NEW: Clear Reply History endpoint (Reset Timer Function)
+        // Clear Reply History endpoint (Reset Timer Function)
         app.post('/api/clear-history', (req, res) => {
             this.lastReplies.clear();
             console.log('🧹 Reply history cleared');
@@ -313,6 +430,7 @@ class WhatsAppAutoResponder {
         .vip-item { background: white; padding: 8px 12px; margin: 4px 0; border-radius: 4px; border-left: 3px solid #25d366; }
         .logs { background: #2d3748; color: #e2e8f0; padding: 16px; border-radius: 6px; font-family: monospace; font-size: 12px; max-height: 200px; overflow-y: auto; }
         .info-box { background: #e3f2fd; padding: 12px; border-radius: 6px; margin-bottom: 16px; border-left: 4px solid #2196f3; }
+        .bot-info-box { background: #f3e5f5; padding: 12px; border-radius: 6px; margin-bottom: 16px; border-left: 4px solid #9c27b0; }
     </style>
 </head>
 <body>
@@ -341,6 +459,14 @@ class WhatsAppAutoResponder {
         </div>
 
         <div class="card">
+            <div class="bot-info-box">
+                <strong>🤖 New: Bot Commands Available!</strong><br>
+                You can now control the auto-responder directly from WhatsApp by sending commands to yourself.<br>
+                Send <strong>/help</strong> to yourself in WhatsApp to see all available commands.
+            </div>
+        </div>
+
+        <div class="card">
             <div class="status">
                 <div style="display: flex; align-items: center;">
                     <div class="status-indicator" id="statusIndicator"></div>
@@ -365,6 +491,7 @@ class WhatsAppAutoResponder {
                 <textarea id="awayMessage" rows="3" placeholder="I'm away from my smartphone. If urgent, call me on +33 XX XX XX XX"></textarea>
             </div>
             <button class="btn" onclick="updateMessage()">Update Message</button>
+            <p style="margin-top: 8px; color: #666; font-size: 14px;">💡 You can also use: <code>/msg Your new message</code> in WhatsApp</p>
         </div>
 
         <div class="card">
@@ -375,6 +502,7 @@ class WhatsAppAutoResponder {
                 <input type="text" id="vipPhone" placeholder="e.g., 33123456789">
             </div>
             <button class="btn" onclick="addVIP()">Add VIP</button>
+            <p style="margin-top: 8px; color: #666; font-size: 14px;">💡 You can also use: <code>/vip add 33123456789</code> in WhatsApp</p>
             <div class="vip-list" id="vipList">
                 <em>No VIP contacts added yet</em>
             </div>
@@ -385,7 +513,8 @@ class WhatsAppAutoResponder {
             <button class="btn" onclick="clearHistory()" style="margin-right: 10px;">🧹 Clear Reply History</button>
             <button class="btn" onclick="loadStatus()">♻️ Refresh Status</button>
             <p style="margin-top: 12px; color: #666; font-size: 14px;">
-                Clear Reply History: Allows all contacts to receive auto-replies again immediately (resets 12-hour timer)
+                Clear Reply History: Allows all contacts to receive auto-replies again immediately (resets 12-hour timer)<br>
+                💡 You can also use: <code>/clear</code> in WhatsApp
             </p>
         </div>
 
@@ -546,7 +675,7 @@ class WhatsAppAutoResponder {
             }
         }
 
-        // NEW: Clear Reply History function (Reset Timer)
+        // Clear Reply History function (Reset Timer)
         async function clearHistory() {
             try {
                 const response = await fetch('/api/clear-history', { method: 'POST' });

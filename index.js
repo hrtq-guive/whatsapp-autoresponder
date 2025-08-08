@@ -121,7 +121,7 @@ class WhatsAppAutoResponder {
         try {
             if (!this.isAwayMode) return;
             if (message.fromMe) return;
-            if (message.from.includes('@g.us')) return;
+            // if (message.from.includes('@g.us')) return;
 
             const contact = await message.getContact();
             const contactId = contact.id.user;

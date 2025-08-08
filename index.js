@@ -6,6 +6,9 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 
+// Removed: The extra 'let isAutoReplyActive = false;' variable from here.
+// The app already uses 'this.isAwayMode' inside the class.
+
 class WhatsAppAutoResponder {
     constructor() {
         this.client = null;
@@ -203,6 +206,17 @@ class WhatsAppAutoResponder {
             res.json({ awayMode: this.isAwayMode });
         });
 
+        // =======================================================
+        // NEW CODE ADDED HERE FOR THE IOS SHORTCUT
+        // =======================================================
+        app.get('/api/toggle-away-shortcut', (req, res) => {
+            this.isAwayMode = !this.isAwayMode;
+            console.log(`🔄 Away mode triggered by shortcut: ${this.isAwayMode ? 'ON' : 'OFF'}`);
+            this.broadcastLog(`🔄 Away mode triggered by shortcut: ${this.isAwayMode ? 'ON' : 'OFF'}`);
+            res.send(`Auto-reply mode has been set to ${this.isAwayMode}`);
+        });
+        // =======================================================
+
         app.post('/api/update-message', (req, res) => {
             const { message } = req.body;
             if (message && message.trim()) {
@@ -297,7 +311,6 @@ class WhatsAppAutoResponder {
             <p>Manage your away messages and digital boundaries</p>
         </div>
 
-        <!-- QR Code Section -->
         <div class="card">
             <div class="qr-section">
                 <div class="qr-status" id="qrStatus">Connecting to WhatsApp...</div>
@@ -449,7 +462,7 @@ class WhatsAppAutoResponder {
             // Update VIP list
             if (currentStatus.vipContacts.length > 0) {
                 vipList.innerHTML = currentStatus.vipContacts
-                    .map(contact => \`<div class="vip-item">📞 \${contact}</div>\`)
+                    .map(contact => `<div class="vip-item">📞 ${contact}</div>`)
                     .join('');
             } else {
                 vipList.innerHTML = '<em>No VIP contacts added yet</em>';
@@ -500,7 +513,7 @@ class WhatsAppAutoResponder {
                     currentStatus.vipContacts = result.vips;
                     document.getElementById('vipPhone').value = '';
                     updateUI();
-                    addLog(\`⭐ Added VIP: \${phoneNumber}\`);
+                    addLog(`⭐ Added VIP: ${phoneNumber}`);
                 }
             } catch (error) {
                 addLog('❌ Failed to add VIP contact');
@@ -510,7 +523,7 @@ class WhatsAppAutoResponder {
         function addLog(message) {
             const log = document.getElementById('activityLog');
             const timestamp = new Date().toLocaleTimeString();
-            log.innerHTML += \`<div>[\${timestamp}] \${message}</div>\`;
+            log.innerHTML += `<div>[${timestamp}] ${message}</div>`;
             log.scrollTop = log.scrollHeight;
         }
 

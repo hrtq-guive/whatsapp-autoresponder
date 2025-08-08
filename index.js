@@ -26,9 +26,10 @@ class WhatsAppAutoResponder {
         console.log('🔧 Initializing WhatsApp client...');
         
         this.client = new Client({
-            authStrategy: new LocalAuth({
-                name: 'auto-responder'
-            }),
+   		authStrategy: new LocalAuth({
+        	name: 'auto-responder',
+        		dataPath: './whatsapp-session'
+    	    }),
             puppeteer: {
                 headless: true,
                 args: [

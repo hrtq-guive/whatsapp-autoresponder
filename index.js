@@ -459,7 +459,7 @@ class WhatsAppAutoResponder {
             // Update VIP list
             if (currentStatus.vipContacts.length > 0) {
                 vipList.innerHTML = currentStatus.vipContacts
-                    .map(contact => `<div class="vip-item">📞 ${contact}</div>`)
+                    .map(contact => '<div class="vip-item">📞 ' + contact + '</div>')
                     .join('');
             } else {
                 vipList.innerHTML = '<em>No VIP contacts added yet</em>';
